@@ -3,6 +3,7 @@
     ["Atari - Lynx", "Atari Lynx"],
     ["DOS", "DOS"],
     ["FBNeo - Arcade Games", "Arcade"],
+    ["NEC - PC Engine - TurboGrafx 16", "PC Engine/TurboGrafx-16"],
     ["Nintendo - Game Boy", "Game Boy"],
     ["Nintendo - Game Boy Advance", "Game Boy Advance"],
     ["Nintendo - Game Boy Color", "Game Boy Color"],
@@ -22,5 +23,6 @@
     ["Sega - Saturn", "Saturn"],
     ["Sony - PlayStation", "PlayStation"],
     ["Sony - PlayStation 2", "PlayStation 2"],
-    ["Sony - PlayStation Portable", "PlayStation Portable"]
+    ["Sony - PlayStation Portable", "PlayStation Portable"],
+    ["The 3DO Company - 3DO", "3DO Interactive Multiplayer"]
 ]

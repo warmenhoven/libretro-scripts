@@ -42,7 +42,7 @@ for ci_group in ci_groups:
         for job in jobs:
             try:
                 if job.runner['id'] == 18 or job.runner['id'] == 14:
-                    print(str(job.runner['id']) + ": " + group.name + "/" + project.name + ": " + job.name)
+                    print(str(job.runner['id']) + ": " + group.name + "/" + project.name + ": " + job.name + " queued: " + str(job.queued_duration))
 
             except Exception as e:
                 # print("Failed to deal with job: " + job.name + " for project: " + project.name, flush=True)

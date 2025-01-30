@@ -11,8 +11,11 @@ projects+=" "
 projects+=$(curl -s --header "$auth" "$urlbase/projects?per_page=100&page=3" | jq -r '.[].path_with_namespace')
 for i in $projects ; do
     (
-        #curl -s --header "$auth" "$urlbase/projects/$i/pipelines/latest" | jq -r 'if (.message or isempty(.status)) then empty else if (.status != "success") then .status + ": " + .web_url else empty end end'
-        echo $i
-    ) &
+        mirr=$(curl -s --header "$auth" -o - "https://git.libretro.com/$i/-/branches" | grep "This project is mirrored from")
+        if [ -n "$mirr" ] ; then
+            echo "$i: $mirr"
+        fi
+    )
 done
 wait
+
