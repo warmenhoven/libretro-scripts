@@ -1,9 +1,18 @@
 [
     ["Atari - 2600", "Atari 2600"],
+
     ["Atari - Lynx", "Atari Lynx"],
+    ["Bandai - WonderSwan Color", "WonderSwan"],
+
     ["DOS", "DOS"],
+
+
     ["FBNeo - Arcade Games", "Arcade"],
+    ["Fairchild - Channel F", "Fairchild Channel F"],
+    ["Mattel - Intellivision", "Intellivision"],
     ["NEC - PC Engine - TurboGrafx 16", "PC Engine/TurboGrafx-16"],
+    ["NEC - PC Engine CD - TurboGrafx-CD", "PC Engine CD/TurboGrafx-CD"],
+    ["NEC - PC-FX", "PC-FX"],
     ["Nintendo - Game Boy", "Game Boy"],
     ["Nintendo - Game Boy Advance", "Game Boy Advance"],
     ["Nintendo - Game Boy Color", "Game Boy Color"],
@@ -15,6 +24,11 @@
     ["Nintendo - Super Nintendo Entertainment System", "SNES/Super Famicom"],
     ["Nintendo - Wii", "Wii"],
     ["Philips - CD-i", "Philips CD-i"],
+
+
+
+
+    ["Sega - 32X", "32X"],
     ["Sega - Dreamcast", "Dreamcast"],
     ["Sega - Game Gear", "Game Gear"],
     ["Sega - Master System - Mark III", "Master System"],
@@ -24,5 +38,7 @@
     ["Sony - PlayStation", "PlayStation"],
     ["Sony - PlayStation 2", "PlayStation 2"],
     ["Sony - PlayStation Portable", "PlayStation Portable"],
-    ["The 3DO Company - 3DO", "3DO Interactive Multiplayer"]
+    ["The 3DO Company - 3DO", "3DO Interactive Multiplayer"],
+
+    ["Watara - Supervision", "Watara Supervision"]
 ]
