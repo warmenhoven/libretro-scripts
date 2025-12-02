@@ -2,10 +2,11 @@
 
 function usage() {
     echo "Usage:"
-    echo "  $0 [rom_directory]"
+    echo "  $0 [rom_directory] [system_name]"
     echo "Environment variables:"
     echo "  RA_API_KEY must be set."
     echo "  ROM_DIR can be set, or specified as an argument, otherwise defaults to \$PWD."
+    echo "If system_name is provided, only that system directory will be checked."
     exit 1
 }
 
@@ -20,11 +21,12 @@ for cmd in "${required_commands[@]}"; do
     fi
 done
 
-# Determine ROM directory
+# Determine ROM directory and optional system filter
 ROM_DIR="${1:-$ROM_DIR}"
 if [ -z "$ROM_DIR" ]; then
     ROM_DIR="$PWD"
 fi
+SYSTEM_NAME="$2"
 
 if [ -z "$RA_API_KEY" ]; then
     echo "Error: RA_API_KEY environment variable is not set."
@@ -40,7 +42,8 @@ function rebuild_cache() {
 
 if [ ! -f "consoleids.json" ] ; then rebuild_cache ; fi
 
-for dir in "$ROM_DIR"/* ; do
+function check_dir() {
+    dir="$1"
     if [ ! -d "$dir" ] ; then continue ; fi
     bn=$(basename "$dir")
     sys=$(jq -r --arg system "$bn" '.[] | select(.[0] == $system) | .[1]' ratora.json)
@@ -50,7 +53,7 @@ for dir in "$ROM_DIR"/* ; do
     fi
     sysid=$(jq -r --arg system "$sys" '.[] | select(.Name == $system) | .ID' consoleids.json)
     if [ -z "$sysid" ] ; then continue ; fi
-    echo "===== $sys ====="
+    echo "===== $sys ($sysid) ====="
 
     count=0
     badhash=0
@@ -58,7 +61,11 @@ for dir in "$ROM_DIR"/* ; do
     for file in "$dir"/* ; do
         count=$(($count + 1))
         if [ ! -f "$file" ] ; then continue ; fi
-        filehash=$(RAHasher "$sysid" "$file" 2>/dev/null)
+        if [[ "$file" == *.rvz ]]; then
+            filehash=$(test_rvz_reader "$file" 2>/dev/null | awk '{print $4}')
+        else
+            filehash=$(RAHasher "$sysid" "$file" 2>/dev/null)
+        fi
         if [ -z "$filehash" ] ; then
             echo "  Could not properly hash $file"
             badhash=$(($badhash + 1))
@@ -77,4 +84,12 @@ for dir in "$ROM_DIR"/* ; do
     if [ $nomatch -gt 0 ] ; then
         echo "  --> $nomatch did not match"
     fi
-done
+}
+
+if [ -n "$SYSTEM_NAME" ]; then
+    check_dir "$ROM_DIR/$SYSTEM_NAME"
+else
+    for dir in "$ROM_DIR"/* ; do
+        check_dir "$dir"
+    done
+fi
