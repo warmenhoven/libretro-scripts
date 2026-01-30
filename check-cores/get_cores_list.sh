@@ -1,6 +1,6 @@
 #!/bin/bash
 
-for target in apple/ios9 apple/ios-arm64 apple/osx/arm64 apple/osx/x86_64 apple/tvos-arm64 windows/x86_64 ; do
+for target in apple/ios9 apple/ios-arm64 apple/osx/arm64 apple/osx/x86_64 apple/tvos-arm64 linux/x86_64 windows/x86_64 ; do
     outname=$(echo $target | sed -e 's/\//./g')
     echo Fetching $target to $outname
     curl -s -d "{\"action\":\"get\",\"items\":{\"href\":\"/nightly/$target/latest/\",\"what\":1}}" https://buildbot.libretro.com/? | \
@@ -38,6 +38,9 @@ function dgs() {
 
 echo "** Cores that are on Windows x86_64 but not OSX x86_64"
 dgs windows.x86_64 apple.osx.x86_64
+
+echo "** Cores that are on Linux x86_64 but not OSX x86_64"
+dgs linux.x86_64 apple.osx.x86_64
 
 echo "** Cores that are available for OSX x86_64 but not arm64"
 dgs apple.osx.x86_64 apple.osx.arm64

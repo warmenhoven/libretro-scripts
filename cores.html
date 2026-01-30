@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>libretro buildbot core status</title>
+    <style>
+      body { font-family: sans-serif; margin: 20px; }
+      table { border-collapse: collapse; }
+      th, td { padding: 4px 8px; vertical-align: middle; border-bottom: 1px solid #eee; }
+      th { position: sticky; top: 0; background: white; text-align: left; }
+      td:first-child { font-family: monospace; }
+      img { vertical-align: middle; }
+      .y { color: #2a2; text-align: center; }
+      .n { color: #c66; text-align: center; }
+      .u { color: #ccc; text-align: center; }
+      #status { margin-bottom: 10px; color: #666; }
+      #filter { margin-bottom: 10px; padding: 4px; width: 300px; }
+    </style>
+  </head>
+  <body>
+    <h1>libretro buildbot core status</h1>
+    <div id="status">Loading...</div>
+    <input type="text" id="filter" placeholder="Filter cores..." />
+    <label><input type="checkbox" id="hideOk" onchange="applyFilters()"> Hide all-OK rows</label>
+    <label><input type="checkbox" id="hideUnknown" onchange="applyFilters()" checked> Hide unknown pipelines</label>
+    <table>
+      <thead>
+        <tr>
+          <th>Core</th>
+          <th>Pipeline</th>
+          <th>win-x64</th>
+          <th>linux-x64</th>
+          <th>android</th>
+          <th>osx-x64</th>
+          <th>osx-arm64</th>
+          <th>ios-arm64</th>
+          <th>tvos-arm64</th>
+        </tr>
+      </thead>
+      <tbody id="cores"></tbody>
+    </table>
+
+    <script>
+      const GITLAB_URL = 'https://git.libretro.com';
+      const GROUP = 'libretro';
+      const PLATFORMS = ['windows-x64', 'linux-x64', 'android-arm64', 'osx-x64', 'osx-arm64', 'ios-arm64', 'tvos-arm64'];
+
+      // Projects to skip (superseded or deprecated)
+      const SKIP_PROJECTS = ['flycast', 'uae4arm-libretro'];
+
+
+      // Platform patterns to look for in job names
+      const PLATFORM_JOB_PATTERNS = {
+        'windows-x64': ['libretro-build-windows-x64', 'build-retroarch-windows-x64', 'windows-x64'],
+        'linux-x64': ['libretro-build-linux-x64', 'build-retroarch-linux-x64', 'linux-x64'],
+        'android-arm64': ['android-arm64-v8a', 'android-arm64', 'build-retroarch-android-aarch64'],
+        'osx-x64': ['libretro-build-osx-x64', 'build-retroarch-osx-x64', 'build-retroarch-osx-universal-metal', 'build-retroarch-osx-opengl-x64', 'osx-x64'],
+        'osx-arm64': ['libretro-build-osx-arm64', 'build-retroarch-osx-arm64', 'build-retroarch-osx-universal-metal', 'osx-arm64'],
+        'ios-arm64': ['libretro-build-ios-arm64', 'build-retroarch-ios-arm64', 'ios-arm64'],
+        'tvos-arm64': ['libretro-build-tvos-arm64', 'build-retroarch-tvos-arm64', 'tvos-arm64'],
+      };
+
+      // Fetch a file from a project
+      async function fetchFile(projectId, filePath, ref) {
+        const url = `${GITLAB_URL}/api/v4/projects/${projectId}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(ref)}`;
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const data = await response.json();
+        return atob(data.content);
+      }
+
+      // Fetch project info from .gitlab-ci.yml (including local includes)
+      async function fetchProjectInfo(project) {
+        const info = { coreName: null, pipelineStatus: null, platforms: {} };
+        try {
+          let content = await fetchFile(project.id, '.gitlab-ci.yml', project.default_branch);
+          if (!content) return info;
+
+          // Check for local file includes and fetch them
+          const localIncludes = content.match(/^\s*-\s*['"]([^'"]+\.yml)['"]$/gm) || [];
+          for (const inc of localIncludes) {
+            const pathMatch = inc.match(/['"]([^'"]+)['"]/);
+            if (pathMatch) {
+              const includedContent = await fetchFile(project.id, pathMatch[1], project.default_branch);
+              if (includedContent) {
+                content += '\n' + includedContent;
+              }
+            }
+          }
+
+          // Extract CORENAME
+          const match = content.match(/CORENAME:\s*["']?([^"'\s\n]+)["']?/i);
+          info.coreName = match ? match[1].toLowerCase() : null;
+
+          // Find job definitions (lines starting with word characters, ending with colon)
+          // Filter out dummy jobs per get_artifacts.py logic
+          const jobMatches = content.match(/^[\w][\w\-]*:/gm) || [];
+          const jobs = jobMatches
+            .map(j => j.replace(':', '').toLowerCase())
+            .filter(j => !j.includes('dummy'));
+
+          // Check which platforms have jobs defined
+          for (const platform of PLATFORMS) {
+            const patterns = PLATFORM_JOB_PATTERNS[platform] || [];
+            info.platforms[platform] = jobs.some(job =>
+              patterns.some(pattern => job.includes(pattern.toLowerCase()))
+            );
+          }
+
+          // Fetch latest pipeline status
+          const pipeUrl = `${GITLAB_URL}/api/v4/projects/${project.id}/pipelines?per_page=1&ref=${encodeURIComponent(project.default_branch)}`;
+          const pipeResponse = await fetch(pipeUrl);
+          if (pipeResponse.ok) {
+            const pipelines = await pipeResponse.json();
+            info.pipelineStatus = pipelines[0]?.status || null;
+          }
+        } catch (e) {
+          // ignore errors
+        }
+        return info;
+      }
+
+      function appendProjects(projects) {
+        const table = document.getElementById('cores');
+        const filterQuery = document.getElementById('filter').value.toLowerCase();
+
+        for (const project of projects) {
+          if (!project.default_branch) continue;
+          if (SKIP_PROJECTS.includes(project.name.toLowerCase())) continue;
+
+          const row = document.createElement('tr');
+          row.dataset.name = project.name.toLowerCase();
+
+          if (filterQuery && !row.dataset.name.includes(filterQuery)) {
+            row.style.display = 'none';
+          }
+
+          // Name cell
+          const nameCell = document.createElement('td');
+          nameCell.textContent = project.name;
+          row.appendChild(nameCell);
+
+          // Pipeline badge cell
+          const badgeCell = document.createElement('td');
+          const link = document.createElement('a');
+          link.href = `${project.web_url}/-/pipelines`;
+          link.target = '_blank';
+          const img = document.createElement('img');
+          img.alt = 'pipeline status';
+          img.src = `${project.web_url}/badges/${project.default_branch}/pipeline.svg`;
+          img.loading = 'lazy';
+          link.appendChild(img);
+          badgeCell.appendChild(link);
+          row.appendChild(badgeCell);
+
+          // Platform availability cells (initially show loading state)
+          const platformCells = [];
+          for (const platform of PLATFORMS) {
+            const cell = document.createElement('td');
+            cell.textContent = '·';
+            cell.className = 'n';
+            row.appendChild(cell);
+            platformCells.push(cell);
+          }
+
+          table.appendChild(row);
+
+          // Fetch CORENAME, pipeline status, and platform availability, then update cells
+          fetchProjectInfo(project).then(info => {
+            const isUnknown = !info.pipelineStatus || info.pipelineStatus === 'skipped' || info.pipelineStatus === 'manual';
+            const isPassed = info.pipelineStatus === 'success';
+            let allAvailable = true;
+            for (let i = 0; i < PLATFORMS.length; i++) {
+              const available = info.platforms[PLATFORMS[i]] || false;
+              if (!available) allAvailable = false;
+              platformCells[i].textContent = available ? '✓' : (isUnknown ? '—' : '✗');
+              platformCells[i].className = available ? 'y' : (isUnknown ? 'u' : 'n');
+            }
+            row.dataset.ok = (isPassed && allAvailable) ? 'true' : 'false';
+            row.dataset.unknown = isUnknown ? 'true' : 'false';
+            applyFilters();
+          });
+        }
+      }
+
+      function applyFilters() {
+        const query = document.getElementById('filter').value.toLowerCase();
+        const hideOk = document.getElementById('hideOk').checked;
+        const hideUnknown = document.getElementById('hideUnknown').checked;
+        const rows = document.querySelectorAll('#cores tr');
+        for (const row of rows) {
+          const matchesQuery = row.dataset.name.includes(query);
+          const isOk = row.dataset.ok === 'true';
+          const isUnknown = row.dataset.unknown === 'true';
+          const hidden = (hideOk && isOk) || (hideUnknown && isUnknown);
+          row.style.display = (matchesQuery && !hidden) ? '' : 'none';
+        }
+      }
+
+      function setupFilter() {
+        document.getElementById('filter').addEventListener('input', applyFilters);
+      }
+
+      async function main() {
+        const status = document.getElementById('status');
+        setupFilter();
+
+        let loaded = 0;
+        let total = null;
+        let page = 1;
+        const perPage = 25;
+
+        try {
+          while (true) {
+            const url = `${GITLAB_URL}/api/v4/groups/${GROUP}/projects?per_page=${perPage}&page=${page}&order_by=name&sort=asc`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            if (total === null) {
+              total = parseInt(response.headers.get('x-total'), 10) || '?';
+            }
+
+            const data = await response.json();
+            if (data.length === 0) break;
+
+            appendProjects(data);
+            loaded += data.length;
+            status.textContent = `Loading... (${loaded}/${total})`;
+
+            if (data.length < perPage) break;
+            page++;
+          }
+
+          status.textContent = `${loaded} projects`;
+        } catch (err) {
+          status.textContent = `Error: ${err.message} (${loaded}/${total} loaded)`;
+          console.error(err);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>
