@@ -13,6 +13,9 @@
       .y { color: #2a2; text-align: center; }
       .n { color: #c66; text-align: center; }
       .u { color: #ccc; text-align: center; }
+      .refresh-btn { cursor: pointer; background: none; border: none; color: #999; padding: 0 2px; font-size: 14px; }
+      .refresh-btn:hover { color: #333; }
+      #refresh-all { cursor: pointer; }
       #status { margin-bottom: 10px; color: #666; }
       #filter { margin-bottom: 10px; padding: 4px; width: 300px; }
     </style>
@@ -21,8 +24,9 @@
     <h1>libretro buildbot core status</h1>
     <div id="status">Loading...</div>
     <input type="text" id="filter" placeholder="Filter cores..." />
-    <label><input type="checkbox" id="hideOk" onchange="applyFilters()"> Hide all-OK rows</label>
-    <label><input type="checkbox" id="hideUnknown" onchange="applyFilters()" checked> Hide unknown pipelines</label>
+    <label><input type="checkbox" id="hideOk" onchange="saveAndApplyFilters()"> Hide all-OK rows</label>
+    <label><input type="checkbox" id="hideUnknown" onchange="saveAndApplyFilters()"> Hide unknown pipelines</label>
+    <button id="refresh-all" onclick="refreshAll()" title="Refresh all cores">↻ Refresh All</button>
     <table>
       <thead>
         <tr>
@@ -120,6 +124,36 @@
         return info;
       }
 
+      function updateRowCells(row, platformCells, info) {
+        const isUnknown = !info.pipelineStatus || info.pipelineStatus === 'skipped' || info.pipelineStatus === 'manual';
+        const isPassed = info.pipelineStatus === 'success';
+        let allAvailable = true;
+        for (let i = 0; i < PLATFORMS.length; i++) {
+          const available = info.platforms[PLATFORMS[i]] || false;
+          if (!available) allAvailable = false;
+          platformCells[i].textContent = available ? '✓' : (isUnknown ? '—' : '✗');
+          platformCells[i].className = available ? 'y' : (isUnknown ? 'u' : 'n');
+        }
+        row.dataset.ok = (isPassed && allAvailable) ? 'true' : 'false';
+        row.dataset.unknown = isUnknown ? 'true' : 'false';
+        applyFilters();
+      }
+
+      function refreshAll() {
+        for (const row of document.querySelectorAll('#cores tr')) {
+          if (row._project) refreshProject(row);
+        }
+      }
+
+      async function refreshProject(row) {
+        const cells = row._platformCells;
+        for (const cell of cells) { cell.textContent = '…'; cell.className = 'u'; }
+        const info = await fetchProjectInfo(row._project);
+        updateRowCells(row, cells, info);
+        const p = row._project;
+        row._badgeImg.src = `${p.web_url}/badges/${p.default_branch}/pipeline.svg?t=${Date.now()}`;
+      }
+
       function appendProjects(projects) {
         const table = document.getElementById('cores');
         const filterQuery = document.getElementById('filter').value.toLowerCase();
@@ -138,6 +172,12 @@
           // Name cell
           const nameCell = document.createElement('td');
           nameCell.textContent = project.name;
+          const refreshBtn = document.createElement('button');
+          refreshBtn.className = 'refresh-btn';
+          refreshBtn.textContent = ' ↻';
+          refreshBtn.title = 'Refresh this core';
+          refreshBtn.onclick = () => refreshProject(row);
+          nameCell.appendChild(refreshBtn);
           row.appendChild(nameCell);
 
           // Pipeline badge cell
@@ -163,24 +203,20 @@
             platformCells.push(cell);
           }
 
+          row._project = project;
+          row._platformCells = platformCells;
+          row._badgeImg = img;
           table.appendChild(row);
 
           // Fetch CORENAME, pipeline status, and platform availability, then update cells
-          fetchProjectInfo(project).then(info => {
-            const isUnknown = !info.pipelineStatus || info.pipelineStatus === 'skipped' || info.pipelineStatus === 'manual';
-            const isPassed = info.pipelineStatus === 'success';
-            let allAvailable = true;
-            for (let i = 0; i < PLATFORMS.length; i++) {
-              const available = info.platforms[PLATFORMS[i]] || false;
-              if (!available) allAvailable = false;
-              platformCells[i].textContent = available ? '✓' : (isUnknown ? '—' : '✗');
-              platformCells[i].className = available ? 'y' : (isUnknown ? 'u' : 'n');
-            }
-            row.dataset.ok = (isPassed && allAvailable) ? 'true' : 'false';
-            row.dataset.unknown = isUnknown ? 'true' : 'false';
-            applyFilters();
-          });
+          fetchProjectInfo(project).then(info => updateRowCells(row, platformCells, info));
         }
+      }
+
+      function saveAndApplyFilters() {
+        localStorage.setItem('cores_hideOk', document.getElementById('hideOk').checked);
+        localStorage.setItem('cores_hideUnknown', document.getElementById('hideUnknown').checked);
+        applyFilters();
       }
 
       function applyFilters() {
@@ -198,6 +234,10 @@
       }
 
       function setupFilter() {
+        const savedHideOk = localStorage.getItem('cores_hideOk');
+        const savedHideUnknown = localStorage.getItem('cores_hideUnknown');
+        document.getElementById('hideOk').checked = savedHideOk === 'true';
+        document.getElementById('hideUnknown').checked = savedHideUnknown !== null ? savedHideUnknown === 'true' : true;
         document.getElementById('filter').addEventListener('input', applyFilters);
       }
 
