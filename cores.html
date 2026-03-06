@@ -34,11 +34,11 @@
           <th>Pipeline</th>
           <th>win-x64</th>
           <th>linux-x64</th>
-          <th>android</th>
           <th>osx-x64</th>
           <th>osx-arm64</th>
           <th>ios-arm64</th>
           <th>tvos-arm64</th>
+          <th>android-arm64-v8a</th>
         </tr>
       </thead>
       <tbody id="cores"></tbody>
@@ -47,7 +47,8 @@
     <script>
       const GITLAB_URL = 'https://git.libretro.com';
       const GROUP = 'libretro';
-      const PLATFORMS = ['windows-x64', 'linux-x64', 'android-arm64', 'osx-x64', 'osx-arm64', 'ios-arm64', 'tvos-arm64'];
+      const PLATFORMS = ['windows-x64', 'linux-x64', 'osx-x64', 'osx-arm64', 'ios-arm64', 'tvos-arm64', 'android-arm64'];
+      const PLATFORMS_REQUIRED = PLATFORMS.filter(p => p !== 'android-arm64');
 
       // Projects to skip (superseded or deprecated)
       const SKIP_PROJECTS = ['flycast', 'uae4arm-libretro'];
@@ -130,7 +131,7 @@
         let allAvailable = true;
         for (let i = 0; i < PLATFORMS.length; i++) {
           const available = info.platforms[PLATFORMS[i]] || false;
-          if (!available) allAvailable = false;
+          if (!available && PLATFORMS_REQUIRED.includes(PLATFORMS[i])) allAvailable = false;
           platformCells[i].textContent = available ? '✓' : (isUnknown ? '—' : '✗');
           platformCells[i].className = available ? 'y' : (isUnknown ? 'u' : 'n');
         }
