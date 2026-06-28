@@ -23,6 +23,11 @@
   <body>
     <h1>libretro buildbot core status</h1>
     <div id="status">Loading...</div>
+    <div id="tokenbox" style="margin-bottom:10px;">
+      <input type="password" id="token" placeholder="GitLab token (stored locally)" style="width:300px;padding:4px;" />
+      <button onclick="saveToken()">Save token</button>
+      <span id="tokenstatus" style="color:#666;"></span>
+    </div>
     <input type="text" id="filter" placeholder="Filter cores..." />
     <label><input type="checkbox" id="hideOk" onchange="saveAndApplyFilters()"> Hide all-OK rows</label>
     <label><input type="checkbox" id="hideUnknown" onchange="saveAndApplyFilters()"> Hide unknown pipelines</label>
@@ -53,6 +58,36 @@
       // Projects to skip (superseded or deprecated)
       const SKIP_PROJECTS = ['flycast', 'uae4arm-libretro'];
 
+      // GitLab token (stored locally, never committed). Authenticated requests
+      // get a much higher rate-limit ceiling, avoiding 429s from the request burst.
+      function getToken() { return localStorage.getItem('cores_token') || ''; }
+      function saveToken() {
+        localStorage.setItem('cores_token', document.getElementById('token').value.trim());
+        document.getElementById('tokenstatus').textContent = 'saved — reloading…';
+        location.reload();
+      }
+
+      // Concurrency-limited fetch wrapper that injects the token header. Caps
+      // in-flight requests so we don't flood the server even when authenticated.
+      const MAX_CONCURRENT = 6;
+      let inFlight = 0;
+      const queue = [];
+      function gfetch(url) {
+        return new Promise((resolve, reject) => {
+          queue.push({ url, resolve, reject });
+          pump();
+        });
+      }
+      function pump() {
+        while (inFlight < MAX_CONCURRENT && queue.length) {
+          const { url, resolve, reject } = queue.shift();
+          inFlight++;
+          const token = getToken();
+          const opts = token ? { headers: { 'PRIVATE-TOKEN': token } } : {};
+          fetch(url, opts).then(resolve, reject).finally(() => { inFlight--; pump(); });
+        }
+      }
+
 
       // Platform patterns to look for in job names
       const PLATFORM_JOB_PATTERNS = {
@@ -68,7 +103,7 @@
       // Fetch a file from a project
       async function fetchFile(projectId, filePath, ref) {
         const url = `${GITLAB_URL}/api/v4/projects/${projectId}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(ref)}`;
-        const response = await fetch(url);
+        const response = await gfetch(url);
         if (!response.ok) return null;
         const data = await response.json();
         return atob(data.content);
@@ -114,7 +149,7 @@
 
           // Fetch latest pipeline status
           const pipeUrl = `${GITLAB_URL}/api/v4/projects/${project.id}/pipelines?per_page=1&ref=${encodeURIComponent(project.default_branch)}`;
-          const pipeResponse = await fetch(pipeUrl);
+          const pipeResponse = await gfetch(pipeUrl);
           if (pipeResponse.ok) {
             const pipelines = await pipeResponse.json();
             info.pipelineStatus = pipelines[0]?.status || null;
@@ -240,6 +275,9 @@
         document.getElementById('hideOk').checked = savedHideOk === 'true';
         document.getElementById('hideUnknown').checked = savedHideUnknown !== null ? savedHideUnknown === 'true' : true;
         document.getElementById('filter').addEventListener('input', applyFilters);
+        document.getElementById('token').value = getToken();
+        document.getElementById('tokenstatus').textContent =
+          getToken() ? '' : 'no token — anonymous requests get rate-limited (429)';
       }
 
       async function main() {
@@ -254,7 +292,7 @@
         try {
           while (true) {
             const url = `${GITLAB_URL}/api/v4/groups/${GROUP}/projects?per_page=${perPage}&page=${page}&order_by=name&sort=asc`;
-            const response = await fetch(url);
+            const response = await gfetch(url);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
             if (total === null) {
