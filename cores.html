@@ -52,6 +52,7 @@
     <script>
       const GITLAB_URL = 'https://git.libretro.com';
       const GROUP = 'libretro';
+      const PAGE_SIZE = 50;
       const PLATFORMS = ['windows-x64', 'linux-x64', 'osx-x64', 'osx-arm64', 'ios-arm64', 'tvos-arm64', 'android-arm64'];
       const PLATFORMS_REQUIRED = PLATFORMS.filter(p => p !== 'android-arm64');
 
@@ -67,27 +68,24 @@
         location.reload();
       }
 
-      // Concurrency-limited fetch wrapper that injects the token header. Caps
-      // in-flight requests so we don't flood the server even when authenticated.
-      const MAX_CONCURRENT = 6;
-      let inFlight = 0;
-      const queue = [];
-      function gfetch(url) {
-        return new Promise((resolve, reject) => {
-          queue.push({ url, resolve, reject });
-          pump();
+      // Single GraphQL POST. One query returns project + latest pipeline status +
+      // real job names for a whole page of projects, replacing the hundreds of
+      // per-project REST calls (CI-file fetch, include resolution, pipeline lookup,
+      // badge image) the old version made.
+      async function gql(query, variables) {
+        const token = getToken();
+        const headers = { 'Content-Type': 'application/json' };
+        if (token) headers['PRIVATE-TOKEN'] = token;
+        const response = await fetch(`${GITLAB_URL}/api/graphql`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ query, variables }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const json = await response.json();
+        if (json.errors) throw new Error(json.errors.map(e => e.message).join('; '));
+        return json.data;
       }
-      function pump() {
-        while (inFlight < MAX_CONCURRENT && queue.length) {
-          const { url, resolve, reject } = queue.shift();
-          inFlight++;
-          const token = getToken();
-          const opts = token ? { headers: { 'PRIVATE-TOKEN': token } } : {};
-          fetch(url, opts).then(resolve, reject).finally(() => { inFlight--; pump(); });
-        }
-      }
-
 
       // Platform patterns to look for in job names
       const PLATFORM_JOB_PATTERNS = {
@@ -100,110 +98,93 @@
         'tvos-arm64': ['libretro-build-tvos-arm64', 'build-retroarch-tvos-arm64', 'tvos-arm64'],
       };
 
-      // Fetch a file from a project
-      async function fetchFile(projectId, filePath, ref) {
-        const url = `${GITLAB_URL}/api/v4/projects/${projectId}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(ref)}`;
-        const response = await gfetch(url);
-        if (!response.ok) return null;
-        const data = await response.json();
-        return atob(data.content);
-      }
+      // GraphQL fields fetched per project. Job names come from the latest
+      // pipeline, so platform availability reflects what actually built (no need
+      // to fetch and parse .gitlab-ci.yml or resolve its includes).
+      const PROJECT_FIELDS = `
+        name
+        fullPath
+        webUrl
+        pipelines(first: 1) {
+          nodes { status jobs(first: 150) { nodes { name } } }
+        }`;
 
-      // Fetch project info from .gitlab-ci.yml (including local includes)
-      async function fetchProjectInfo(project) {
-        const info = { coreName: null, pipelineStatus: null, platforms: {} };
-        try {
-          let content = await fetchFile(project.id, '.gitlab-ci.yml', project.default_branch);
-          if (!content) return info;
+      const STATUS_LABELS = {
+        success: 'passed', failed: 'failed', running: 'running', pending: 'pending',
+        canceled: 'canceled', created: 'created', skipped: 'skipped', manual: 'manual',
+      };
 
-          // Check for local file includes and fetch them
-          const localIncludes = content.match(/^\s*-\s*['"]([^'"]+\.yml)['"]$/gm) || [];
-          for (const inc of localIncludes) {
-            const pathMatch = inc.match(/['"]([^'"]+)['"]/);
-            if (pathMatch) {
-              const includedContent = await fetchFile(project.id, pathMatch[1], project.default_branch);
-              if (includedContent) {
-                content += '\n' + includedContent;
-              }
-            }
-          }
-
-          // Extract CORENAME
-          const match = content.match(/CORENAME:\s*["']?([^"'\s\n]+)["']?/i);
-          info.coreName = match ? match[1].toLowerCase() : null;
-
-          // Find job definitions (lines starting with word characters, ending with colon)
-          // Filter out dummy jobs per get_artifacts.py logic
-          const jobMatches = content.match(/^[\w][\w\-]*:/gm) || [];
-          const jobs = jobMatches
-            .map(j => j.replace(':', '').toLowerCase())
-            .filter(j => !j.includes('dummy'));
-
-          // Check which platforms have jobs defined
-          for (const platform of PLATFORMS) {
-            const patterns = PLATFORM_JOB_PATTERNS[platform] || [];
-            info.platforms[platform] = jobs.some(job =>
-              patterns.some(pattern => job.includes(pattern.toLowerCase()))
-            );
-          }
-
-          // Fetch latest pipeline status
-          const pipeUrl = `${GITLAB_URL}/api/v4/projects/${project.id}/pipelines?per_page=1&ref=${encodeURIComponent(project.default_branch)}`;
-          const pipeResponse = await gfetch(pipeUrl);
-          if (pipeResponse.ok) {
-            const pipelines = await pipeResponse.json();
-            info.pipelineStatus = pipelines[0]?.status || null;
-          }
-        } catch (e) {
-          // ignore errors
+      // Flatten a GraphQL project node into the shape the UI uses.
+      function normalizeProject(node) {
+        const pipeline = node.pipelines.nodes[0] || null;
+        const jobs = pipeline
+          ? pipeline.jobs.nodes.map(j => j.name.toLowerCase()).filter(j => !j.includes('dummy'))
+          : [];
+        const platforms = {};
+        for (const platform of PLATFORMS) {
+          const patterns = PLATFORM_JOB_PATTERNS[platform] || [];
+          platforms[platform] = jobs.some(job => patterns.some(p => job.includes(p.toLowerCase())));
         }
-        return info;
+        return {
+          name: node.name,
+          slug: node.fullPath.split('/').pop().toLowerCase(),
+          fullPath: node.fullPath,
+          webUrl: node.webUrl,
+          status: pipeline && pipeline.status ? pipeline.status.toLowerCase() : null,
+          platforms,
+        };
       }
 
-      function updateRowCells(row, platformCells, info) {
-        const isUnknown = !info.pipelineStatus || info.pipelineStatus === 'skipped' || info.pipelineStatus === 'manual';
-        const isPassed = info.pipelineStatus === 'success';
+      function updateRowCells(row, project) {
+        const status = project.status;
+        const isUnknown = !status || status === 'skipped' || status === 'manual';
+        const isPassed = status === 'success';
         let allAvailable = true;
         for (let i = 0; i < PLATFORMS.length; i++) {
-          const available = info.platforms[PLATFORMS[i]] || false;
+          const available = project.platforms[PLATFORMS[i]] || false;
           if (!available && PLATFORMS_REQUIRED.includes(PLATFORMS[i])) allAvailable = false;
-          platformCells[i].textContent = available ? '✓' : (isUnknown ? '—' : '✗');
-          platformCells[i].className = available ? 'y' : (isUnknown ? 'u' : 'n');
+          const cell = row._platformCells[i];
+          cell.textContent = available ? '✓' : (isUnknown ? '—' : '✗');
+          cell.className = available ? 'y' : (isUnknown ? 'u' : 'n');
         }
+
+        // Pipeline status as a colored text link (replaces the badge image).
+        const link = row._statusCell.firstChild;
+        link.href = `${project.webUrl}/-/pipelines`;
+        link.textContent = STATUS_LABELS[status] || status || 'none';
+        link.className = isPassed ? 'y' : (isUnknown ? 'u' : 'n');
+
+        row._project = project;
         row.dataset.ok = (isPassed && allAvailable) ? 'true' : 'false';
         row.dataset.unknown = isUnknown ? 'true' : 'false';
         applyFilters();
       }
 
       function refreshAll() {
-        for (const row of document.querySelectorAll('#cores tr')) {
-          if (row._project) refreshProject(row);
-        }
+        document.getElementById('cores').innerHTML = '';
+        loadAll();
       }
 
       async function refreshProject(row) {
-        const cells = row._platformCells;
-        for (const cell of cells) { cell.textContent = '…'; cell.className = 'u'; }
-        const info = await fetchProjectInfo(row._project);
-        updateRowCells(row, cells, info);
-        const p = row._project;
-        row._badgeImg.src = `${p.web_url}/badges/${p.default_branch}/pipeline.svg?t=${Date.now()}`;
+        for (const cell of row._platformCells) { cell.textContent = '…'; cell.className = 'u'; }
+        try {
+          const data = await gql(
+            `query($path: ID!) { project(fullPath: $path) { ${PROJECT_FIELDS} } }`,
+            { path: row._project.fullPath });
+          if (data.project) updateRowCells(row, normalizeProject(data.project));
+        } catch (e) {
+          // leave existing cells as-is
+        }
       }
 
       function appendProjects(projects) {
         const table = document.getElementById('cores');
-        const filterQuery = document.getElementById('filter').value.toLowerCase();
 
         for (const project of projects) {
-          if (!project.default_branch) continue;
-          if (SKIP_PROJECTS.includes(project.name.toLowerCase())) continue;
+          if (SKIP_PROJECTS.includes(project.name.toLowerCase()) || SKIP_PROJECTS.includes(project.slug)) continue;
 
           const row = document.createElement('tr');
           row.dataset.name = project.name.toLowerCase();
-
-          if (filterQuery && !row.dataset.name.includes(filterQuery)) {
-            row.style.display = 'none';
-          }
 
           // Name cell
           const nameCell = document.createElement('td');
@@ -216,36 +197,27 @@
           nameCell.appendChild(refreshBtn);
           row.appendChild(nameCell);
 
-          // Pipeline badge cell
-          const badgeCell = document.createElement('td');
+          // Pipeline status cell (link text filled in by updateRowCells)
+          const statusCell = document.createElement('td');
           const link = document.createElement('a');
-          link.href = `${project.web_url}/-/pipelines`;
           link.target = '_blank';
-          const img = document.createElement('img');
-          img.alt = 'pipeline status';
-          img.src = `${project.web_url}/badges/${project.default_branch}/pipeline.svg`;
-          img.loading = 'lazy';
-          link.appendChild(img);
-          badgeCell.appendChild(link);
-          row.appendChild(badgeCell);
+          link.style.textDecoration = 'none';
+          statusCell.appendChild(link);
+          row.appendChild(statusCell);
 
-          // Platform availability cells (initially show loading state)
+          // Platform availability cells
           const platformCells = [];
           for (const platform of PLATFORMS) {
             const cell = document.createElement('td');
-            cell.textContent = '·';
-            cell.className = 'n';
             row.appendChild(cell);
             platformCells.push(cell);
           }
 
-          row._project = project;
           row._platformCells = platformCells;
-          row._badgeImg = img;
+          row._statusCell = statusCell;
           table.appendChild(row);
 
-          // Fetch CORENAME, pipeline status, and platform availability, then update cells
-          fetchProjectInfo(project).then(info => updateRowCells(row, platformCells, info));
+          updateRowCells(row, project);
         }
       }
 
@@ -280,41 +252,41 @@
           getToken() ? '' : 'no token — anonymous requests get rate-limited (429)';
       }
 
-      async function main() {
+      // Walk the group's projects via cursor pagination, one GraphQL query per
+      // page of PAGE_SIZE projects. Rows render incrementally as each page lands.
+      async function loadAll() {
         const status = document.getElementById('status');
-        setupFilter();
+        const query = `query($cursor: String) {
+          group(fullPath: "${GROUP}") {
+            projects(first: ${PAGE_SIZE}, sort: PATH_ASC, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { ${PROJECT_FIELDS} }
+            }
+          }
+        }`;
 
+        let cursor = null;
         let loaded = 0;
-        let total = null;
-        let page = 1;
-        const perPage = 25;
-
         try {
           while (true) {
-            const url = `${GITLAB_URL}/api/v4/groups/${GROUP}/projects?per_page=${perPage}&page=${page}&order_by=name&sort=asc`;
-            const response = await gfetch(url);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-            if (total === null) {
-              total = parseInt(response.headers.get('x-total'), 10) || '?';
-            }
-
-            const data = await response.json();
-            if (data.length === 0) break;
-
-            appendProjects(data);
-            loaded += data.length;
-            status.textContent = `Loading... (${loaded}/${total})`;
-
-            if (data.length < perPage) break;
-            page++;
+            const data = await gql(query, { cursor });
+            const conn = data.group.projects;
+            appendProjects(conn.nodes.map(normalizeProject));
+            loaded += conn.nodes.length;
+            status.textContent = `Loading... (${loaded})`;
+            if (!conn.pageInfo.hasNextPage) break;
+            cursor = conn.pageInfo.endCursor;
           }
-
           status.textContent = `${loaded} projects`;
         } catch (err) {
-          status.textContent = `Error: ${err.message} (${loaded}/${total} loaded)`;
+          status.textContent = `Error: ${err.message} (${loaded} loaded)`;
           console.error(err);
         }
+      }
+
+      function main() {
+        setupFilter();
+        loadAll();
       }
 
       main();
