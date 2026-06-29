@@ -98,15 +98,20 @@
         'tvos-arm64': ['libretro-build-tvos-arm64', 'build-retroarch-tvos-arm64', 'tvos-arm64'],
       };
 
-      // GraphQL fields fetched per project. Job names come from the latest
-      // pipeline, so platform availability reflects what actually built (no need
-      // to fetch and parse .gitlab-ci.yml or resolve its includes).
+      // GraphQL fields fetched per project. We fetch several recent pipelines
+      // (with their ref) plus the default branch name, then pick the latest
+      // pipeline that actually ran on the default branch — otherwise a stray
+      // dependabot/MR/feature-branch pipeline would masquerade as the core's
+      // status. Job names come from that pipeline, so platform availability
+      // reflects what actually built on the default branch (no need to fetch
+      // and parse .gitlab-ci.yml or resolve its includes).
       const PROJECT_FIELDS = `
         name
         fullPath
         webUrl
-        pipelines(first: 1) {
-          nodes { status jobs(first: 150) { nodes { name } } }
+        repository { rootRef }
+        pipelines(first: 20) {
+          nodes { status ref jobs(first: 150) { nodes { name } } }
         }`;
 
       const STATUS_LABELS = {
@@ -116,7 +121,12 @@
 
       // Flatten a GraphQL project node into the shape the UI uses.
       function normalizeProject(node) {
-        const pipeline = node.pipelines.nodes[0] || null;
+        // Prefer the latest pipeline on the default branch; fall back to the
+        // most recent pipeline if none of the fetched ones ran on it.
+        const defaultBranch = node.repository ? node.repository.rootRef : null;
+        const nodes = node.pipelines.nodes;
+        const pipeline = (defaultBranch && nodes.find(p => p.ref === defaultBranch))
+          || nodes[0] || null;
         const jobs = pipeline
           ? pipeline.jobs.nodes.map(j => j.name.toLowerCase()).filter(j => !j.includes('dummy'))
           : [];
